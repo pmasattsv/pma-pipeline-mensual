@@ -84,34 +84,12 @@ jobs:
           PMA_SKIP_PUBLISH: ${{ github.event.inputs.skip_publish }}
         run: python orquestador.py
 
-      - name: Leer resultado
+      - name: Preparar correos
         id: res
         if: always()
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          try:
-              r = json.load(open("outputs/resultado.json"))
-          except Exception:
-              r = {"ciclo": "sin-ciclo", "errores": ["sin resultado.json (fallo antes del orquestador)"]}
-          j = lambda k: ", ".join(r.get(k, [])) or "-"
-          print("publicados=" + str(len(r.get("publicados", []))))
-          print("errores=" + str(len(r.get("errores", []))))
-          print("periodo=" + str(r.get("ciclo") or "sin-ciclo"))
-          print("alerta=" + str(bool(r.get("alerta_fin_ventana"))).lower())
-          print("resumen<<EOF_R")
-          print("Ciclo de ejecucion:     " + str(r.get("ciclo", "?")))
-          print("Mes objetivo:           " + j("objetivos"))
-          print("Publicados ahora:       " + j("publicados"))
-          print("Ya estaban publicados:  " + j("ya_estaban"))
-          print("Pendientes (IDEAM):     " + j("pendientes"))
-          print("  - archivo no existe:  " + j("no_existe"))
-          print("  - corrida anterior:   " + j("corrida_anterior"))
-          print("Errores:                " + j("errores"))
-          if r.get("modo_prueba"):
-              print("MODO PRUEBA - generados sin publicar: " + j("generados_sin_publicar"))
-          print("EOF_R")
-          PY
+        env:
+          MODO_PRUEBA: ${{ env.MODO_PRUEBA }}
+        run: python3 src/notificaciones.py
 
       - name: Guardar salidas como artefacto
         if: always()
@@ -137,7 +115,7 @@ jobs:
           done
           echo "::error::No se pudo hacer push de la bitacora tras 3 intentos"; exit 1
 
-      - name: Correo de exito
+      - name: Correo de pronostico publicado
         if: always() && steps.orq.outcome == 'success' && steps.res.outputs.publicados != '0' && env.MODO_PRUEBA != 'true'
         uses: dawidd6/action-send-mail@v4
         with:
@@ -146,19 +124,14 @@ jobs:
           secure: true
           username: ${{ secrets.MAIL_USER }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          from: PMA Bot <${{ secrets.MAIL_USER }}>
+          from: '"Plataforma de Monitoreo Agroclimático (PMA)" <${{ secrets.MAIL_USER }}>'
           to: ${{ steps.dest.outputs.to }}
-          subject: "OK - PMA publico el pronostico (ciclo ${{ steps.res.outputs.periodo }})"
-          body: |
-            El proceso PMA publico nuevos pronosticos en GeoServer.
-
-            ${{ steps.res.outputs.resumen }}
-
-            Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          subject: ${{ steps.res.outputs.asunto_ok }}
+          body: ${{ steps.res.outputs.cuerpo_ok }}
           attachments: outputs/mapa_*.png
 
-      - name: Correo de error
-        if: (failure() || steps.res.outputs.errores != '0') && steps.dest.outputs.to != '' && env.MODO_PRUEBA != 'true'
+      - name: Correo de publicacion retrasada (error, una vez por ciclo)
+        if: always() && steps.res.outputs.notificar_error == 'true' && steps.dest.outputs.to != ''
         uses: dawidd6/action-send-mail@v4
         with:
           server_address: smtp.gmail.com
@@ -166,18 +139,13 @@ jobs:
           secure: true
           username: ${{ secrets.MAIL_USER }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          from: PMA Bot <${{ secrets.MAIL_USER }}>
+          from: '"Plataforma de Monitoreo Agroclimático (PMA)" <${{ secrets.MAIL_USER }}>'
           to: ${{ steps.dest.outputs.to }}
-          subject: "ERROR - PMA fallo (ciclo ${{ steps.res.outputs.periodo }})"
-          body: |
-            El proceso PMA tuvo un error. Revisa el log de la corrida.
+          subject: ${{ steps.res.outputs.asunto_retraso }}
+          body: ${{ steps.res.outputs.cuerpo_retraso }}
 
-            ${{ steps.res.outputs.resumen }}
-
-            Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-      - name: Correo de alerta (fin de ventana sin publicar)
-        if: always() && steps.res.outputs.alerta == 'true' && env.MODO_PRUEBA != 'true'
+      - name: Correo de pronostico no disponible (fin de ventana, una vez por ciclo)
+        if: always() && steps.res.outputs.notificar_alerta == 'true' && steps.dest.outputs.to != ''
         uses: dawidd6/action-send-mail@v4
         with:
           server_address: smtp.gmail.com
@@ -185,15 +153,7 @@ jobs:
           secure: true
           username: ${{ secrets.MAIL_USER }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          from: PMA Bot <${{ secrets.MAIL_USER }}>
+          from: '"Plataforma de Monitoreo Agroclimático (PMA)" <${{ secrets.MAIL_USER }}>'
           to: ${{ steps.dest.outputs.to }}
-          subject: "ALERTA - PMA termino la ventana sin publicar (ciclo ${{ steps.res.outputs.periodo }})"
-          body: |
-            Hoy es la ultima corrida programada del ciclo y el pronostico del mes siguiente
-            NO se publico (el IDEAM no libero la corrida del mes o hubo errores).
-            No habra mas intentos automaticos hasta el dia 8 del proximo mes;
-            si el IDEAM lo libera despues, lanza el workflow a mano.
-
-            ${{ steps.res.outputs.resumen }}
-
-            Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          subject: ${{ steps.res.outputs.asunto_sin }}
+          body: ${{ steps.res.outputs.cuerpo_sin }}

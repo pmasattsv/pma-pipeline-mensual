@@ -26,10 +26,15 @@ de cada mes a las 06:00 (hora Colombia)** y ejecuta `src/orquestador.py`:
 3. Registra lo publicado en `state/publicados.json` para no repetirlo en el resto del ciclo
    (el estado se reinicia solo al cambiar de mes).
 4. Guarda mapas y GeoTIFF como artefacto, hace un commit de bitácora (`logs/corridas.log`)
-   que además mantiene activo el cron, y envía correos:
-   - **OK** cuando publica (con los mapas adjuntos),
-   - **ERROR** si algo falla,
-   - **ALERTA** si llega el día 27 y el mes siguiente sigue sin publicarse.
+   que además mantiene activo el cron, y envía correos a **todos** los destinatarios:
+   - **Pronóstico publicado:** explica los dos mapas y adjunta los 6 PNG.
+   - **Publicación retrasada:** si una corrida falla. Se envía **una sola vez por ciclo**,
+     aunque el proceso siga fallando en los reintentos diarios.
+   - **Pronóstico no disponible:** si llega el día 27 y el mes siguiente no se publicó
+     (el motivo cambia según si fue el IDEAM o una falla técnica). Una vez por ciclo.
+
+   Los días en que el IDEAM todavía no ha liberado el archivo no se envía nada.
+   Los textos de los correos están en `src/notificaciones.py` (firma, enlace a AClimate, etc.).
 
 La publicación es "todo o nada": antes de subir se verifica que existan los 6 stores
 (3 departamentos × 2 variables); si falta alguno, no se sube nada y la corrida queda en error.
@@ -43,6 +48,7 @@ La publicación es "todo o nada": antes de subir se verifica que existan los 6 s
 ├── .github/workflows/pma-produccion.yml  ← Workflow de producción (único)
 ├── src/orquestador.py                    ← Decide qué mes procesar y cuándo
 ├── src/resampling_PMA.py                 ← Procesa y publica UN mes
+├── src/notificaciones.py                 ← Textos de los correos y control de avisos
 ├── config/destinatarios.txt              ← Correos que reciben las notificaciones
 ├── data/precip_spei_mensual.nc           ← Histórico CHIRPS/AgERA5 (mar-1981 a jun-2025)
 ├── data/departamentos.geojson            ← Límites de los 3 departamentos (Natural Earth 10m)
@@ -57,7 +63,8 @@ La publicación es "todo o nada": antes de subir se verifica que existan los 6 s
 
 ## 📧 Destinatarios de los correos
 
-Los correos de **OK**, **ERROR** y **ALERTA** se envían a la lista de `config/destinatarios.txt`.
+Todos los correos (pronóstico publicado, publicación retrasada y pronóstico no disponible)
+se envían a la lista de `config/destinatarios.txt`.
 El archivo tiene **un correo por línea**; las líneas vacías y las que empiezan con `#` se ignoran.
 
 ```
