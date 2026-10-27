@@ -93,11 +93,11 @@ jobs:
           try:
               r = json.load(open("outputs/resultado.json"))
           except Exception:
-              r = {"ciclo": "?", "errores": ["sin resultado.json (fallo antes del orquestador)"]}
+              r = {"ciclo": "sin-ciclo", "errores": ["sin resultado.json (fallo antes del orquestador)"]}
           j = lambda k: ", ".join(r.get(k, [])) or "-"
           print("publicados=" + str(len(r.get("publicados", []))))
           print("errores=" + str(len(r.get("errores", []))))
-          print("periodo=" + str(r.get("ciclo", "?")))
+          print("periodo=" + str(r.get("ciclo") or "sin-ciclo"))
           print("alerta=" + str(bool(r.get("alerta_fin_ventana"))).lower())
           print("resumen<<EOF_R")
           print("Ciclo de ejecucion:     " + str(r.get("ciclo", "?")))
