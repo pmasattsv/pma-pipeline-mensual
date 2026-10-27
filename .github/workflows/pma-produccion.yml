@@ -1,27 +1,28 @@
-name: PMA - Produccion (diario, publica proximos 3 meses)
+name: PMA - Produccion (diario del 8 al 27, publica el mes siguiente)
 
 on:
   schedule:
     # A diario del dia 8 al 27, 06:00 hora Colombia (11:00 UTC).
-    # Poll diario: publica cada mes objetivo apenas el IDEAM lo libere.
+    # Poll diario: publica el mes siguiente apenas el IDEAM libere la corrida del mes.
     - cron: "0 11 8-27 * *"
   workflow_dispatch:
     inputs:
+      skip_publish:
+        description: "Modo prueba: genera mapas SIN publicar, sin tocar el estado y sin correos (1=si, 0=no)"
+        required: false
+        default: "0"
       base_month:
-        description: "Mes base 1-12 (vacio = mes actual). Genera los 3 meses siguientes."
+        description: "Mes base 1-12 (vacio = mes actual). Se genera el mes siguiente."
         required: false
       base_year:
         description: "Anio base (vacio = anio actual)"
-        required: false
-      n_meses:
-        description: "Cuantos meses hacia adelante (vacio = 3)"
         required: false
       require_fresh:
         description: "Exigir corrida del mes segun fecha de subida (1=si, 0=no; vacio=1)"
         required: false
 
 permissions:
-  contents: write        # para el commit de estado + bitacora (keepalive)
+  contents: write        # commit de estado + bitacora (mantiene activo el cron)
 
 concurrency:
   group: pma-produccion
@@ -30,14 +31,35 @@ concurrency:
 jobs:
   produccion:
     runs-on: ubuntu-latest
+    env:
+      MODO_PRUEBA: ${{ github.event.inputs.skip_publish == '1' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Leer destinatarios (config/destinatarios.txt)
+        id: dest
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re, sys
+          ok, malos = [], []
+          for linea in open("config/destinatarios.txt", encoding="utf-8"):
+              c = linea.strip()
+              if not c or c.startswith("#"):
+                  continue
+              (ok if re.fullmatch(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+", c) else malos).append(c)
+          if malos:
+              sys.exit(f"Correos invalidos en config/destinatarios.txt: {malos}")
+          if not ok:
+              sys.exit("config/destinatarios.txt no tiene ningun correo valido.")
+          print("to=" + ", ".join(dict.fromkeys(ok)))
+          PY
+
       - name: Configurar Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.10"
+          python-version: "3.12"
+          cache: pip
 
       - name: Instalar dependencias
         run: |
@@ -55,10 +77,11 @@ jobs:
           GEO_STORE_PREFIX: ${{ secrets.GEO_STORE_PREFIX }}
           GEO_FILE_PREFIX:  ${{ secrets.GEO_FILE_PREFIX }}
           PMA_DEPARTMENTS: "Caquetá,Amazonas,Putumayo"
-          PMA_N_MESES:  ${{ github.event.inputs.n_meses }}
+          PMA_N_MESES: "1"
           PMA_BASE_MONTH: ${{ github.event.inputs.base_month }}
           PMA_BASE_YEAR:  ${{ github.event.inputs.base_year }}
           PMA_REQUIRE_FRESH: ${{ github.event.inputs.require_fresh }}
+          PMA_SKIP_PUBLISH: ${{ github.event.inputs.skip_publish }}
         run: python orquestador.py
 
       - name: Leer resultado
@@ -70,17 +93,23 @@ jobs:
           try:
               r = json.load(open("outputs/resultado.json"))
           except Exception:
-              r = {"ciclo":"?","publicados":[],"ya_estaban":[],"pendientes":[],"errores":[]}
+              r = {"ciclo": "?", "errores": ["sin resultado.json (fallo antes del orquestador)"]}
           j = lambda k: ", ".join(r.get(k, [])) or "-"
           print("publicados=" + str(len(r.get("publicados", []))))
           print("errores=" + str(len(r.get("errores", []))))
           print("periodo=" + str(r.get("ciclo", "?")))
+          print("alerta=" + str(bool(r.get("alerta_fin_ventana"))).lower())
           print("resumen<<EOF_R")
-          print("Ciclo: " + str(r.get("ciclo","?")))
-          print("Publicados ahora: " + j("publicados"))
-          print("Ya estaban:       " + j("ya_estaban"))
-          print("Pendientes:       " + j("pendientes"))
-          print("Errores:          " + j("errores"))
+          print("Ciclo de ejecucion:     " + str(r.get("ciclo", "?")))
+          print("Mes objetivo:           " + j("objetivos"))
+          print("Publicados ahora:       " + j("publicados"))
+          print("Ya estaban publicados:  " + j("ya_estaban"))
+          print("Pendientes (IDEAM):     " + j("pendientes"))
+          print("  - archivo no existe:  " + j("no_existe"))
+          print("  - corrida anterior:   " + j("corrida_anterior"))
+          print("Errores:                " + j("errores"))
+          if r.get("modo_prueba"):
+              print("MODO PRUEBA - generados sin publicar: " + j("generados_sin_publicar"))
           print("EOF_R")
           PY
 
@@ -88,13 +117,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: pma-prod-${{ steps.res.outputs.periodo }}
+          name: pma-prod-${{ steps.res.outputs.periodo }}-${{ github.run_id }}
           path: outputs/**
           if-no-files-found: warn
           retention-days: 30
 
       - name: Commit de estado + bitacora (keepalive)
-        if: always()
+        if: always() && env.MODO_PRUEBA != 'true'
         run: |
           git config user.name  "pma-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -102,10 +131,14 @@ jobs:
           echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') | ciclo=${{ steps.res.outputs.periodo }} | publicados=${{ steps.res.outputs.publicados }} | errores=${{ steps.res.outputs.errores }} | run=${{ github.run_id }}" >> logs/corridas.log
           git add logs/corridas.log state/ 2>/dev/null || true
           git commit -m "run: ${{ steps.res.outputs.periodo }} (pub=${{ steps.res.outputs.publicados }}, err=${{ steps.res.outputs.errores }})" || { echo "Sin cambios que commitear"; exit 0; }
-          git push
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push && exit 0
+            echo "Push fallo (intento $i/3); reintentando en 10 s..."; sleep 10
+          done
+          echo "::error::No se pudo hacer push de la bitacora tras 3 intentos"; exit 1
 
       - name: Correo de exito
-        if: steps.orq.outcome == 'success' && steps.res.outputs.publicados != '0'
+        if: always() && steps.orq.outcome == 'success' && steps.res.outputs.publicados != '0' && env.MODO_PRUEBA != 'true'
         uses: dawidd6/action-send-mail@v4
         with:
           server_address: smtp.gmail.com
@@ -114,8 +147,8 @@ jobs:
           username: ${{ secrets.MAIL_USER }}
           password: ${{ secrets.MAIL_PASSWORD }}
           from: PMA Bot <${{ secrets.MAIL_USER }}>
-          to: d.agudelo@cgiar.org
-          subject: "OK - PMA publico pronosticos (${{ steps.res.outputs.periodo }})"
+          to: ${{ steps.dest.outputs.to }}
+          subject: "OK - PMA publico el pronostico (ciclo ${{ steps.res.outputs.periodo }})"
           body: |
             El proceso PMA publico nuevos pronosticos en GeoServer.
 
@@ -125,7 +158,7 @@ jobs:
           attachments: outputs/mapa_*.png
 
       - name: Correo de error
-        if: failure() || steps.res.outputs.errores != '0'
+        if: (failure() || steps.res.outputs.errores != '0') && steps.dest.outputs.to != '' && env.MODO_PRUEBA != 'true'
         uses: dawidd6/action-send-mail@v4
         with:
           server_address: smtp.gmail.com
@@ -134,11 +167,33 @@ jobs:
           username: ${{ secrets.MAIL_USER }}
           password: ${{ secrets.MAIL_PASSWORD }}
           from: PMA Bot <${{ secrets.MAIL_USER }}>
-          to: d.agudelo@cgiar.org
-          subject: "ERROR - PMA fallo al publicar (${{ steps.res.outputs.periodo }})"
+          to: ${{ steps.dest.outputs.to }}
+          subject: "ERROR - PMA fallo (ciclo ${{ steps.res.outputs.periodo }})"
           body: |
-            El proceso PMA tuvo un error al publicar en GeoServer.
+            El proceso PMA tuvo un error. Revisa el log de la corrida.
 
             ${{ steps.res.outputs.resumen }}
 
-            Revisa el log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Correo de alerta (fin de ventana sin publicar)
+        if: always() && steps.res.outputs.alerta == 'true' && env.MODO_PRUEBA != 'true'
+        uses: dawidd6/action-send-mail@v4
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USER }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: PMA Bot <${{ secrets.MAIL_USER }}>
+          to: ${{ steps.dest.outputs.to }}
+          subject: "ALERTA - PMA termino la ventana sin publicar (ciclo ${{ steps.res.outputs.periodo }})"
+          body: |
+            Hoy es la ultima corrida programada del ciclo y el pronostico del mes siguiente
+            NO se publico (el IDEAM no libero la corrida del mes o hubo errores).
+            No habra mas intentos automaticos hasta el dia 8 del proximo mes;
+            si el IDEAM lo libera despues, lanza el workflow a mano.
+
+            ${{ steps.res.outputs.resumen }}
+
+            Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -1,0 +1,4 @@
+# Destinatarios de las notificaciones del proceso PMA (exito, error y alertas).
+# Un correo por linea. Las lineas vacias y las que empiezan con # se ignoran.
+# Si este archivo queda sin correos validos, la corrida falla antes de procesar.
+d.agudelo@cgiar.org

@@ -3,8 +3,9 @@
 Orquestador de produccion PMA.
 
 Cada corrida (pensada para ejecutarse a diario dentro de una ventana):
-  1. Calcula los N meses objetivo siguientes al mes actual (por defecto 3),
-     manejando el cambio de anio (dic -> ene del anio siguiente).
+  1. Calcula el mes objetivo: el mes SIGUIENTE al mes actual (PMA_N_MESES=1 por
+     defecto), manejando el cambio de anio (dic -> ene del anio siguiente).
+     Ej.: el ciclo de noviembre publica diciembre.
   2. Para cada objetivo revisa en el IDEAM:
        - si el archivo NO existe aun (404)                 -> pendiente (reintenta manana).
        - si existe pero es de una corrida ANTERIOR         -> pendiente (reintenta manana).
@@ -20,12 +21,14 @@ Codigos de salida:
   2 = habia datos disponibles y frescos pero el pipeline fallo (requiere atencion)
 
 Variables de entorno:
-  PMA_N_MESES         cuantos meses hacia adelante generar (default 3)
+  PMA_N_MESES         cuantos meses hacia adelante generar (default 1 = solo el siguiente)
   PMA_BASE_YEAR /     forzar el mes base en pruebas (default: hoy)
   PMA_BASE_MONTH
   PMA_REQUIRE_FRESH   "1" (default) exige que el archivo sea del mes actual segun Last-Modified.
                       "0" desactiva el chequeo de frescura (procesa con solo que exista).
   PMA_STATE_FILE      ruta del estado (default ../state/publicados.json)
+  PMA_WINDOW_LAST_DAY ultimo dia de la ventana de publicacion (default 27). Si en ese dia
+                      algun mes objetivo sigue sin publicarse, se marca 'alerta_fin_ventana'.
   Ademas las que usa resampling_PMA.py (GEO_*, PMA_DEPARTMENTS, PMA_HTTP_*, etc.)
 """
 import os
@@ -38,7 +41,8 @@ import email.utils
 import urllib.request
 import urllib.error
 
-IDEAM_BASE_URL = "https://bart.ideam.gov.co/wrfideam/new_modelo/CPT/netcdf/PREC"
+IDEAM_BASE_URL = (os.environ.get("PMA_IDEAM_BASE_URL", "").strip()
+                  or "https://bart.ideam.gov.co/wrfideam/new_modelo/CPT/netcdf/PREC")
 AQUI = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.environ.get("PMA_STATE_FILE", os.path.join(AQUI, "..", "state", "publicados.json"))
 RESULT_FILE = os.path.join(AQUI, "..", "outputs", "resultado.json")
@@ -129,21 +133,28 @@ def ejecutar_pipeline(year, month):
 
 
 def main():
-    n = int(os.environ.get("PMA_N_MESES") or 3)
+    n = int(os.environ.get("PMA_N_MESES") or 1)
+    ultimo_dia = int(os.environ.get("PMA_WINDOW_LAST_DAY") or 27)
     exigir_fresco = os.environ.get("PMA_REQUIRE_FRESH", "1").strip().lower() not in ("0", "false", "no")
+    modo_prueba = os.environ.get("PMA_SKIP_PUBLISH", "").strip().lower() in ("1", "true", "yes", "si")
     base_y, base_m = mes_base()
     ciclo = f"{base_y}-{base_m:02d}"
     objetivos = meses_objetivo(base_y, base_m, n)
 
     print("=" * 62)
     print(f"Ciclo de ejecucion: {ciclo}   (exigir corrida del mes: {exigir_fresco})")
+    if modo_prueba:
+        print("MODO PRUEBA: se generan productos SIN publicar y sin modificar el estado.")
     print(f"Meses objetivo ({n}): " + ", ".join(f"{y}-{m:02d}" for y, m in objetivos))
     print("=" * 62)
 
     estado = cargar_estado(ciclo)
     ya_publicados = set(estado.get("publicados", []))
-    resultado = {"ciclo": ciclo, "publicados": [], "ya_estaban": [],
-                 "no_existe": [], "corrida_anterior": [], "errores": []}
+    resultado = {"ciclo": ciclo, "objetivos": [f"{y}-{m:02d}" for y, m in objetivos],
+                 "publicados": [], "ya_estaban": [], "pendientes": [],
+                 "no_existe": [], "corrida_anterior": [], "errores": [],
+                 "generados_sin_publicar": [], "modo_prueba": modo_prueba,
+                 "alerta_fin_ventana": False}
 
     for (y, m) in objetivos:
         tag = f"{y}-{m:02d}"
@@ -171,7 +182,10 @@ def main():
 
         print(f"    disponible y de la corrida de este mes (subido {lm_str}) -> procesando.")
         code = ejecutar_pipeline(y, m)
-        if code == 0:
+        if code == 0 and modo_prueba:
+            print(f"    OK generado {tag} (modo prueba, no publicado).")
+            resultado["generados_sin_publicar"].append(tag)
+        elif code == 0:
             print(f"    OK publicado {tag}.")
             ya_publicados.add(tag)
             resultado["publicados"].append(tag)
@@ -179,8 +193,17 @@ def main():
             print(f"    ERROR el pipeline fallo para {tag} (codigo {code}).")
             resultado["errores"].append(tag)
 
-    estado["publicados"] = sorted(ya_publicados)
-    guardar_json(STATE_FILE, estado)
+    # 'pendientes' = todo lo que aun no se pudo publicar por falta de datos frescos del IDEAM
+    resultado["pendientes"] = resultado["no_existe"] + resultado["corrida_anterior"]
+    hoy = datetime.date.today()
+    es_ultimo_dia = (os.environ.get("PMA_BASE_MONTH", "").strip() == "" and hoy.day >= ultimo_dia)
+    sin_publicar = resultado["pendientes"] + resultado["errores"]
+    if es_ultimo_dia and sin_publicar and not modo_prueba:
+        resultado["alerta_fin_ventana"] = True
+
+    if not modo_prueba:
+        estado["publicados"] = sorted(ya_publicados)
+        guardar_json(STATE_FILE, estado)
     guardar_json(RESULT_FILE, resultado)
 
     print("\n" + "=" * 62)
@@ -190,6 +213,8 @@ def main():
     print(f"  Sin publicar (IDEAM): {resultado['no_existe'] or '-'}")
     print(f"  Corrida anterior    : {resultado['corrida_anterior'] or '-'}")
     print(f"  Errores             : {resultado['errores'] or '-'}")
+    if resultado["alerta_fin_ventana"]:
+        print(f"  ALERTA: ultimo dia de la ventana y quedan meses sin publicar: {sin_publicar}")
     print("=" * 62)
 
     sys.exit(2 if resultado["errores"] else 0)

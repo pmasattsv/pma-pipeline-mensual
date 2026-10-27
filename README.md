@@ -1,28 +1,38 @@
-# 🌧️ PMA Early Warnings — Recomendación Agroclimática Estacional
+# 🌧️ PMA Early Warnings — Recomendación Agroclimática Mensual
 
 **Proyecto:** Plataforma de Monitoreo Agroclimático (PMA)
 **Departamentos:** Caquetá · Amazonas · Putumayo
-**Fuentes:** IDEAM (pronóstico estacional) + CHIRPS / AgERA5 (histórico)
+**Fuentes:** IDEAM (pronóstico mensual) + CHIRPS / AgERA5 (histórico)
 
-Para un mes objetivo, el proceso descarga el pronóstico de precipitación del IDEAM,
-lo cruza con la climatología histórica (1982–2025), genera los productos
-(cambio porcentual de precipitación y categoría SPEI modal) y **publica los GeoTIFF
-en el GeoServer de AClimate** para su visualización.
-
-Este repositorio está diseñado para ejecutarse **de forma desatendida en GitHub Actions,
-una vez al mes**. Ya no depende de Google Colab.
+Cada mes el proceso toma el pronóstico de precipitación del IDEAM **para el mes siguiente**,
+lo cruza con la climatología histórica, genera los productos (cambio porcentual de
+precipitación y riesgo climático según la categoría SPEI modal de años análogos) y
+**publica los GeoTIFF en el GeoServer de AClimate**. Corre desatendido en GitHub Actions.
 
 ---
 
 ## ⚙️ Cómo funciona
 
-Cada mes, el workflow `.github/workflows/pma-mensual.yml`:
+Un único workflow, `.github/workflows/pma-produccion.yml`, corre **todos los días del 8 al 27
+de cada mes a las 06:00 (hora Colombia)** y ejecuta `src/orquestador.py`:
 
-1. Prepara el entorno (Python + dependencias de `requirements.txt`).
-2. Ejecuta `src/resampling_PMA.py`, que genera los productos en `outputs/` y los publica en el GeoServer.
-3. Guarda los mapas y GeoTIFF como **artefacto** descargable de la corrida.
-4. Hace un **commit de bitácora** (`logs/corridas.log`) para mantener activo el workflow programado.
-5. Envía un **correo** de éxito (con los mapas adjuntos) o de error.
+1. Calcula el mes objetivo = **mes siguiente** al actual (en noviembre → diciembre;
+   en diciembre → enero del año siguiente).
+2. Consulta el archivo del IDEAM para ese mes:
+   - si no existe todavía → queda **pendiente** y reintenta al día siguiente;
+   - si existe pero su fecha de subida (`Last-Modified`) es de un mes anterior → es la corrida
+     vieja del IDEAM, queda **pendiente**;
+   - si existe y fue subido este mes → ejecuta `src/resampling_PMA.py` y **publica**.
+3. Registra lo publicado en `state/publicados.json` para no repetirlo en el resto del ciclo
+   (el estado se reinicia solo al cambiar de mes).
+4. Guarda mapas y GeoTIFF como artefacto, hace un commit de bitácora (`logs/corridas.log`)
+   que además mantiene activo el cron, y envía correos:
+   - **OK** cuando publica (con los mapas adjuntos),
+   - **ERROR** si algo falla,
+   - **ALERTA** si llega el día 27 y el mes siguiente sigue sin publicarse.
+
+La publicación es "todo o nada": antes de subir se verifica que existan los 6 stores
+(3 departamentos × 2 variables); si falta alguno, no se sube nada y la corrida queda en error.
 
 ---
 
@@ -30,87 +40,112 @@ Cada mes, el workflow `.github/workflows/pma-mensual.yml`:
 
 ```
 .
-├── .github/workflows/pma-mensual.yml   ← Automatización mensual
-├── src/resampling_PMA.py               ← Proceso principal
-├── data/precip_spei_mensual.nc         ← Histórico CHIRPS/AgERA5 (1982–2025)
-├── outputs/                            ← Salidas (se crea en cada corrida; no se versiona)
-├── requirements.txt
-├── env.txt.example
-└── README.md
+├── .github/workflows/pma-produccion.yml  ← Workflow de producción (único)
+├── src/orquestador.py                    ← Decide qué mes procesar y cuándo
+├── src/resampling_PMA.py                 ← Procesa y publica UN mes
+├── config/destinatarios.txt              ← Correos que reciben las notificaciones
+├── data/precip_spei_mensual.nc           ← Histórico CHIRPS/AgERA5 (mar-1981 a jun-2025)
+├── data/departamentos.geojson            ← Límites de los 3 departamentos (Natural Earth 10m)
+├── state/publicados.json                 ← Estado del ciclo (lo actualiza el bot)
+├── logs/corridas.log                     ← Bitácora (la actualiza el bot)
+├── outputs/                              ← Salidas (se crea en cada corrida; no se versiona)
+├── requirements.txt                      ← Versiones fijas (Python 3.12)
+└── env.example.txt                       ← Plantilla de credenciales para correr en local
 ```
 
 ---
 
-## 🔐 Configuración de credenciales (GitHub Secrets)
+## 📧 Destinatarios de los correos
 
-Las credenciales **nunca** van en el código. Se cargan como *secrets* cifrados:
+Edita `config/destinatarios.txt`: **un correo por línea**; las líneas vacías y las que empiezan
+con `#` se ignoran. Si el archivo queda sin correos válidos, o alguno está mal escrito,
+la corrida falla al inicio con un mensaje claro.
 
-1. En el repo: **Settings → Secrets and variables → Actions → New repository secret**.
-2. Crea estos cuatro:
-
-| Secret          | Contenido                                                        |
-| --------------- | ---------------------------------------------------------------- |
-| `GEO_USER`      | Usuario del GeoServer de AClimate                                |
-| `GEO_PWD`       | Contraseña del GeoServer                                         |
-| `MAIL_USER`     | Correo emisor de notificaciones                                  |
-| `MAIL_PASSWORD` | Contraseña del correo (para Gmail: **App Password** con 2FA)     |
-
-> El workflow trae `environment: production`. Si no quieres usar Environments,
-> borra esa línea del YAML y usa Repository secrets. Si la dejas, crea el Environment
-> llamado exactamente `production` en **Settings → Environments** y pon ahí los secrets.
-
-Antes de subir los destinatarios, edita las líneas `to:` del YAML con los correos reales.
+> ⚠️ Si el repositorio es público, estos correos quedan visibles para cualquiera.
 
 ---
 
-## 🧪 Parámetros (variables de entorno)
+## 🔐 Secrets (Settings → Secrets and variables → Actions)
 
-El proceso lee su configuración de variables de entorno; si no están, usa valores por defecto.
+| Secret             | Contenido                                                     |
+| ------------------ | ------------------------------------------------------------- |
+| `GEO_URL`          | URL REST del GeoServer de AClimate                            |
+| `GEO_WORKSPACE`    | Workspace donde están los mosaicos                            |
+| `GEO_USER`         | Usuario del GeoServer                                         |
+| `GEO_PWD`          | Contraseña del GeoServer                                      |
+| `GEO_STORE_PREFIX` | (opcional) prefijo de los stores; por defecto = workspace     |
+| `GEO_FILE_PREFIX`  | (opcional) prefijo de los granules; por defecto = workspace   |
+| `MAIL_USER`        | Correo emisor de notificaciones                               |
+| `MAIL_PASSWORD`    | Contraseña del correo (Gmail: **App Password** con 2FA)       |
 
-| Variable          | Default              | Descripción                                    |
-| ----------------- | -------------------- | ---------------------------------------------- |
-| `PMA_MONTH`       | mes actual (Actions) | Mes objetivo (1–12)                            |
-| `PMA_YEAR`        | año actual (Actions) | Año objetivo                                   |
-| `PMA_K`           | `3`                  | Nº de años análogos para la moda SPEI          |
-| `PMA_DEPARTMENTS` | `Caquetá`            | Lista separada por comas                       |
-
-En el disparo manual, el workflow permite fijar mes, año y departamentos.
+Los stores esperados en GeoServer se llaman `{GEO_STORE_PREFIX}_st_{departamento}_{variable}`,
+con departamento ∈ {caqueta, amazonas, putumayo} y variable ∈ {pct_change, spei}.
 
 ---
 
-## ▶️ Probar el proceso
+## ▶️ Ejecución manual y pruebas
 
-### En GitHub (end-to-end)
+**Actions → PMA - Produccion → Run workflow.** Inputs (todos opcionales):
 
-1. Sube el repo a `main` (el workflow debe estar en la rama por defecto).
-2. **Actions → PMA Early Warnings (mensual) → Run workflow**. Opcional: fija `month`/`year`.
-3. Revisa los logs, descarga el artefacto y confirma el correo.
+| Input           | Uso                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------- |
+| `skip_publish`  | `1` = **modo prueba**: genera mapas sin publicar, sin tocar el estado y sin correos    |
+| `base_month/year` | Simula otro mes base (se procesa el siguiente a ese)                                |
+| `require_fresh` | `0` = procesa aunque el archivo del IDEAM sea de una corrida anterior                  |
 
-> ⚠️ Una corrida completa **publica de verdad** en el GeoServer (sube el granule del periodo).
+Para revisar los mapas de una prueba, descarga el artefacto de la corrida.
 
-### En local (sin publicar, para validar la generación)
+### En local
 
 ```bash
 pip install -r requirements.txt
-export PMA_MONTH=3 PMA_YEAR=2026     # sin GEO_USER/GEO_PWD
-cd src && python resampling_PMA.py
+export PMA_MONTH=12 PMA_YEAR=2026 PMA_SKIP_PUBLISH=1
+python src/resampling_PMA.py            # un mes puntual, sin publicar
+# o el ciclo completo, sin publicar:
+PMA_SKIP_PUBLISH=1 python src/orquestador.py
 ```
 
-Sin credenciales, se generan todos los mapas en `../outputs/` y el proceso
-falla limpio justo en el paso de publicación. Exporta `GEO_USER`/`GEO_PWD`
-para hacer el flujo completo incluida la publicación.
+Para publicar desde local exporta `GEO_URL`, `GEO_WORKSPACE`, `GEO_USER` y `GEO_PWD`
+(o copia `env.example.txt` a `env.txt` para las credenciales).
+
+### Variables de entorno
+
+| Variable              | Default                     | Descripción                                        |
+| --------------------- | --------------------------- | -------------------------------------------------- |
+| `PMA_MONTH/PMA_YEAR`  | — (requeridas en el script) | Mes objetivo de `resampling_PMA.py`                |
+| `PMA_DEPARTMENTS`     | `Caquetá,Amazonas,Putumayo` | Departamentos a procesar                           |
+| `PMA_K`               | `3`                         | Nº de años análogos para la moda SPEI              |
+| `PMA_N_MESES`         | `1`                         | Meses hacia adelante que procesa el orquestador    |
+| `PMA_REQUIRE_FRESH`   | `1`                         | Exigir que el archivo del IDEAM sea del mes actual |
+| `PMA_WINDOW_LAST_DAY` | `27`                        | Día en que se dispara la alerta si no se publicó   |
+| `PMA_SKIP_PUBLISH`    | vacío                       | `1` = no publica                                   |
+| `PMA_IDEAM_BASE_URL`  | servidor del IDEAM          | Sobrescribe la URL base (pruebas)                  |
 
 ---
 
-## 📦 Productos generados
+## 📦 Productos generados (por departamento y mes)
 
-Para cada departamento y periodo: cambio porcentual de precipitación (`.tif` + `.png`),
-categoría SPEI modal (`.tif` + `.png`) y un mapa de diagnóstico del control de calidad.
-Los GeoTIFF son *Cloud Optimized GeoTIFF* (EPSG:4326) y quedan disponibles vía WMS/WCS en AClimate.
+| Archivo                                   | Contenido                                           |
+| ----------------------------------------- | --------------------------------------------------- |
+| `cambio_pct_MM_YYYY_{depto}.tif`          | Cambio % de precipitación vs climatología           |
+| `spei_moda_MM_YYYY_{depto}.tif`           | Categoría SPEI modal (1 seco, 2 normal, 3 húmedo)   |
+| `mapa_cambio_pct_MM_YYYY_{depto}.png`     | Mapa del cambio porcentual                          |
+| `mapa_riesgo_clima_MM_YYYY_{depto}.png`   | Mapa de riesgo climático (categoría SPEI)           |
+| `qc_pixels_MM_YYYY_{depto}.png`           | Diagnóstico de píxeles corregidos por el QC         |
+
+Los GeoTIFF (EPSG:4326, float32, LZW) se publican como granules
+`{GEO_FILE_PREFIX}_st_{depto}_{variable}_YYYYMM.tif` y quedan disponibles vía WMS/WCS en AClimate.
 
 ---
+
+## Datos
+
+- `data/departamentos.geojson` se extrajo de Natural Earth 10m admin-1
+  (`ne_10m_admin_1_states_provinces`, campos `name` → `departamento` e `iso_3166_2`).
+- El histórico cubre marzo de 1981 a junio de 2025, así que la climatología usa 44 o 45 años
+  según el mes.
 
 ## Licencia
 
 Uso libre para instituciones y personas interesadas en servicios agroclimáticos.
-Si lo usas o adaptas, cita el repositorio y las fuentes originales (IDEAM, CHIRPS, AgERA5).
+Si lo usas o adaptas, cita el repositorio y las fuentes originales (IDEAM, CHIRPS, AgERA5, Natural Earth).
