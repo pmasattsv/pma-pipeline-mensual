@@ -57,9 +57,41 @@ La publicación es "todo o nada": antes de subir se verifica que existan los 6 s
 
 ## 📧 Destinatarios de los correos
 
-Edita `config/destinatarios.txt`: **un correo por línea**; las líneas vacías y las que empiezan
-con `#` se ignoran. Si el archivo queda sin correos válidos, o alguno está mal escrito,
-la corrida falla al inicio con un mensaje claro.
+Los correos de **OK**, **ERROR** y **ALERTA** se envían a la lista de `config/destinatarios.txt`.
+El archivo tiene **un correo por línea**; las líneas vacías y las que empiezan con `#` se ignoran.
+
+```
+# Destinatarios de las notificaciones del proceso PMA (exito, error y alertas).
+d.agudelo@cgiar.org
+otra.persona@ejemplo.org
+```
+
+### Agregar o quitar correos desde la web de GitHub
+
+No hace falta instalar nada ni clonar el repositorio:
+
+1. En la página del repositorio, abre la carpeta **`config`** y luego el archivo **`destinatarios.txt`**.
+2. Haz clic en el **lápiz** (✏️ *Edit this file*), arriba a la derecha del contenido.
+3. Edita la lista:
+   - **Agregar:** escribe el correo nuevo en una línea nueva, al final.
+   - **Quitar:** borra la línea completa de ese correo.
+   - **Pausar temporalmente:** pon `#` al inicio de la línea (por ejemplo `# persona@ejemplo.org`)
+     y para reactivarlo quita el `#`.
+4. Haz clic en **Commit changes…**, escribe un mensaje corto (por ejemplo
+   *"Agrega a persona@ejemplo.org a notificaciones"*), deja marcada la opción
+   **Commit directly to the `main` branch** y confirma con **Commit changes**.
+
+El cambio aplica desde la **siguiente corrida**; no hay que tocar nada más.
+
+**Reglas para que no falle:**
+
+- Un solo correo por línea: no separes varios con comas ni punto y coma en la misma línea.
+- Debe quedar **al menos un correo** sin `#`.
+- Si algún correo está mal escrito (sin `@`, con espacios, etc.) o el archivo queda sin correos,
+  la corrida **falla al inicio** con un mensaje que indica el problema, y en ese caso no se envía
+  ningún correo. Si una corrida aparece en rojo en la pestaña **Actions** justo en el paso
+  *"Leer destinatarios"*, revisa este archivo.
+- Los correos repetidos se envían una sola vez.
 
 > ⚠️ Si el repositorio es público, estos correos quedan visibles para cualquiera.
 

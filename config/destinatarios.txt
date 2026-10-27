@@ -2,3 +2,14 @@
 # Un correo por linea. Las lineas vacias y las que empiezan con # se ignoran.
 # Si este archivo queda sin correos validos, la corrida falla antes de procesar.
 d.agudelo@cgiar.org
+e.zapata@cgiar.org
+laura.munoz@wfp.org
+daily.bastidas@wfp.org
+julie.montezuma@wfp.org
+ana.enriquez@wfp.org
+uriel.carmona@wfp.org
+uriel.carmona@wfp.org
+juan.narvaez@putumayo.gov.co
+equipotecnico.altofragua@parquesnacionales.gov.co
+agricultura@amazonas.gov.co
+luz.daniela992@gmail.com
