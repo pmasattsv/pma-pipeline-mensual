@@ -144,7 +144,7 @@ def main():
     print("=" * 62)
     print(f"Ciclo de ejecucion: {ciclo}   (exigir corrida del mes: {exigir_fresco})")
     if modo_prueba:
-        print("MODO PRUEBA: se generan productos SIN publicar y sin modificar el estado.")
+        print("MODO PRUEBA: se generan productos SIN publicar, ignorando y sin modificar el estado.")
     print(f"Meses objetivo ({n}): " + ", ".join(f"{y}-{m:02d}" for y, m in objetivos))
     print("=" * 62)
 
@@ -159,7 +159,7 @@ def main():
     for (y, m) in objetivos:
         tag = f"{y}-{m:02d}"
         print(f"\n[{tag}]")
-        if tag in ya_publicados:
+        if tag in ya_publicados and not modo_prueba:
             print("    ya se publico en este ciclo -> se omite.")
             resultado["ya_estaban"].append(tag)
             continue
